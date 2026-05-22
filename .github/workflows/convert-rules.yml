@@ -1,0 +1,341 @@
+name: Convert Loyalsoldier Rules to Shadowrocket
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 22 * * *"  # 每天北京时间 06:30 自动更新
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/convert-rules.yml"
+
+jobs:
+  convert-rules:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all rule files
+        run: |
+          mkdir -p rules
+          BASE_URL="https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release"
+          FILES="reject.txt proxy.txt direct.txt apple.txt icloud.txt google.txt gfw.txt tld-not-cn.txt telegramcidr.txt lancidr.txt cncidr.txt applications.txt"
+          for f in $FILES; do
+            echo "Downloading $f..."
+            curl -sSL "$BASE_URL/$f" -o "rules/$f"
+          done
+          echo "Download complete"
+          ls -la rules/
+
+      - name: Convert to Shadowrocket format (Whitelist & Blacklist)
+        run: |
+          python3 << 'PYEOF'
+          import os
+          from datetime import datetime
+
+          def read_domains(filename):
+              """Read domain list from file"""
+              domains = []
+              filepath = f"rules/{filename}"
+              if not os.path.exists(filepath):
+                  return domains
+              with open(filepath, 'r', encoding='utf-8') as f:
+                  for line in f:
+                      line = line.strip()
+                      if line and not line.startswith('#'):
+                          domains.append(line)
+              return domains
+
+          def read_cidrs(filename):
+              """Read CIDR list from file"""
+              cidrs = []
+              filepath = f"rules/{filename}"
+              if not os.path.exists(filepath):
+                  return cidrs
+              with open(filepath, 'r', encoding='utf-8') as f:
+                  for line in f:
+                      line = line.strip()
+                      if line and not line.startswith('#'):
+                          cidrs.append(line)
+              return cidrs
+
+          def read_applications(filename):
+              """Read application list from file"""
+              apps = []
+              filepath = f"rules/{filename}"
+              if not os.path.exists(filepath):
+                  return apps
+              with open(filepath, 'r', encoding='utf-8') as f:
+                  for line in f:
+                      line = line.strip()
+                      if line and not line.startswith('#'):
+                          apps.append(line)
+              return apps
+
+          # Read all rules
+          reject_domains = read_domains('reject.txt')
+          proxy_domains = read_domains('proxy.txt')
+          direct_domains = read_domains('direct.txt')
+          apple_domains = read_domains('apple.txt')
+          icloud_domains = read_domains('icloud.txt')
+          google_domains = read_domains('google.txt')
+          gfw_domains = read_domains('gfw.txt')
+          tld_not_cn_domains = read_domains('tld-not-cn.txt')
+          telegram_cidrs = read_cidrs('telegramcidr.txt')
+          lan_cidrs = read_cidrs('lancidr.txt')
+          cn_cidrs = read_cidrs('cncidr.txt')
+          applications = read_applications('applications.txt')
+
+          print(f"Loaded rules:")
+          print(f"  Reject: {len(reject_domains):,}")
+          print(f"  Proxy: {len(proxy_domains):,}")
+          print(f"  Direct: {len(direct_domains):,}")
+          print(f"  Apple: {len(apple_domains):,}")
+          print(f"  iCloud: {len(icloud_domains):,}")
+          print(f"  Google: {len(google_domains):,}")
+          print(f"  GFW: {len(gfw_domains):,}")
+          print(f"  TLD not CN: {len(tld_not_cn_domains):,}")
+          print(f"  Telegram CIDR: {len(telegram_cidrs):,}")
+          print(f"  LAN CIDR: {len(lan_cidrs):,}")
+          print(f"  CN CIDR: {len(cn_cidrs):,}")
+          print(f"  Applications: {len(applications):,}")
+
+          timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+          repo_url = "https://raw.githubusercontent.com/tkgeeked/clash-rules-for-shadowrocket/main"
+
+          # ========== Generate WHITELIST mode ==========
+          whitelist = []
+          whitelist.append(f"# Loyalsoldier Rules for Shadowrocket (Whitelist Mode): {timestamp}")
+          whitelist.append(f"# 来源: Loyalsoldier/clash-rules")
+          whitelist.append(f"# 自动更新: GitHub Actions 每天 06:30 北京时间")
+          whitelist.append(f"# 白名单模式: 未命中规则的流量默认走代理（推荐）")
+          whitelist.append("")
+          whitelist.append("[General]")
+          whitelist.append("update-url = https://raw.githubusercontent.com/tkgeeked/clash-rules-for-shadowrocket/main/loyalsoldier-whitelist.conf")
+          whitelist.append("")
+          whitelist.append("[Rule]")
+
+          # Applications
+          whitelist.append("# ====== 应用直连规则 ======")
+          for app in applications:
+              whitelist.append(f"PROCESS-NAME,{app},DIRECT")
+          whitelist.append("")
+
+          # LAN CIDR
+          whitelist.append("# ====== 局域网 IP ======")
+          for cidr in lan_cidrs:
+              whitelist.append(f"IP-CIDR,{cidr},DIRECT")
+          whitelist.append("")
+
+          # Reject
+          whitelist.append("# ====== 广告拦截 ======")
+          for domain in reject_domains:
+              whitelist.append(f"DOMAIN-SUFFIX,{domain},REJECT-DROP")
+          whitelist.append("")
+
+          # Apple & iCloud (direct)
+          whitelist.append("# ====== Apple 直连 ======")
+          for domain in apple_domains:
+              whitelist.append(f"DOMAIN-SUFFIX,{domain},DIRECT")
+          whitelist.append("")
+
+          whitelist.append("# ====== iCloud 直连 ======")
+          for domain in icloud_domains:
+              whitelist.append(f"DOMAIN-SUFFIX,{domain},DIRECT")
+          whitelist.append("")
+
+          # Google (direct in China)
+          whitelist.append("# ====== Google 直连（中国大陆可访问的域名）======" )
+          for domain in google_domains:
+              whitelist.append(f"DOMAIN-SUFFIX,{domain},DIRECT")
+          whitelist.append("")
+
+          # Direct
+          whitelist.append("# ====== 其他直连域名 ======")
+          for domain in direct_domains:
+              whitelist.append(f"DOMAIN-SUFFIX,{domain},DIRECT")
+          whitelist.append("")
+
+          # GFW list (proxy)
+          whitelist.append("# ====== GFW 列表（代理）======" )
+          for domain in gfw_domains:
+              whitelist.append(f"DOMAIN-SUFFIX,{domain},PROXY")
+          whitelist.append("")
+
+          # TLD not CN (proxy)
+          whitelist.append("# ====== 非中国顶级域名（代理）======" )
+          for domain in tld_not_cn_domains:
+              whitelist.append(f"DOMAIN-SUFFIX,{domain},PROXY")
+          whitelist.append("")
+
+          # Proxy domains
+          whitelist.append("# ====== 代理域名 ======")
+          for domain in proxy_domains:
+              whitelist.append(f"DOMAIN-SUFFIX,{domain},PROXY")
+          whitelist.append("")
+
+          # Telegram CIDR
+          whitelist.append("# ====== Telegram IP ======")
+          for cidr in telegram_cidrs:
+              whitelist.append(f"IP-CIDR,{cidr},PROXY")
+          whitelist.append("")
+
+          # CN CIDR
+          whitelist.append("# ====== 中国 IP ======")
+          for cidr in cn_cidrs:
+              whitelist.append(f"IP-CIDR,{cidr},DIRECT")
+          whitelist.append("")
+
+          # GEOIP
+          whitelist.append("# ====== GEOIP ======")
+          whitelist.append("GEOIP,CN,DIRECT")
+          whitelist.append("")
+
+          # FINAL (whitelist: default proxy)
+          whitelist.append("# ====== 最终规则（白名单模式）======" )
+          whitelist.append("FINAL,PROXY")
+
+          # Write whitelist
+          whitelist_path = "loyalsoldier-whitelist.conf"
+          with open(whitelist_path, 'w', encoding='utf-8') as f:
+              f.write('\n'.join(whitelist))
+              f.write('\n')
+
+          # ========== Generate BLACKLIST mode ==========
+          blacklist = []
+          blacklist.append(f"# Loyalsoldier Rules for Shadowrocket (Blacklist Mode): {timestamp}")
+          blacklist.append(f"# 来源: Loyalsoldier/clash-rules")
+          blacklist.append(f"# 自动更新: GitHub Actions 每天 06:30 北京时间")
+          blacklist.append(f"# 黑名单模式: 只有命中规则的流量才走代理，其他全部直连")
+          blacklist.append("")
+          blacklist.append("[General]")
+          blacklist.append("update-url = https://raw.githubusercontent.com/tkgeeked/clash-rules-for-shadowrocket/main/loyalsoldier-blacklist.conf")
+          blacklist.append("")
+          blacklist.append("[Rule]")
+
+          # Applications
+          blacklist.append("# ====== 应用直连规则 ======")
+          for app in applications:
+              blacklist.append(f"PROCESS-NAME,{app},DIRECT")
+          blacklist.append("")
+
+          # LAN CIDR
+          blacklist.append("# ====== 局域网 IP ======")
+          for cidr in lan_cidrs:
+              blacklist.append(f"IP-CIDR,{cidr},DIRECT")
+          blacklist.append("")
+
+          # Reject
+          blacklist.append("# ====== 广告拦截 ======")
+          for domain in reject_domains:
+              blacklist.append(f"DOMAIN-SUFFIX,{domain},REJECT-DROP")
+          blacklist.append("")
+
+          # Apple & iCloud (direct)
+          blacklist.append("# ====== Apple 直连 ======")
+          for domain in apple_domains:
+              blacklist.append(f"DOMAIN-SUFFIX,{domain},DIRECT")
+          blacklist.append("")
+
+          blacklist.append("# ====== iCloud 直连 ======")
+          for domain in icloud_domains:
+              blacklist.append(f"DOMAIN-SUFFIX,{domain},DIRECT")
+          blacklist.append("")
+
+          # Google (direct in China)
+          blacklist.append("# ====== Google 直连（中国大陆可访问的域名）======" )
+          for domain in google_domains:
+              blacklist.append(f"DOMAIN-SUFFIX,{domain},DIRECT")
+          blacklist.append("")
+
+          # Direct
+          blacklist.append("# ====== 其他直连域名 ======")
+          for domain in direct_domains:
+              blacklist.append(f"DOMAIN-SUFFIX,{domain},DIRECT")
+          blacklist.append("")
+
+          # GFW list (proxy)
+          blacklist.append("# ====== GFW 列表（代理）======" )
+          for domain in gfw_domains:
+              blacklist.append(f"DOMAIN-SUFFIX,{domain},PROXY")
+          blacklist.append("")
+
+          # TLD not CN (proxy)
+          blacklist.append("# ====== 非中国顶级域名（代理）======" )
+          for domain in tld_not_cn_domains:
+              blacklist.append(f"DOMAIN-SUFFIX,{domain},PROXY")
+          blacklist.append("")
+
+          # Proxy domains
+          blacklist.append("# ====== 代理域名 ======")
+          for domain in proxy_domains:
+              blacklist.append(f"DOMAIN-SUFFIX,{domain},PROXY")
+          blacklist.append("")
+
+          # Telegram CIDR
+          blacklist.append("# ====== Telegram IP ======")
+          for cidr in telegram_cidrs:
+              blacklist.append(f"IP-CIDR,{cidr},PROXY")
+          blacklist.append("")
+
+          # CN CIDR
+          blacklist.append("# ====== 中国 IP ======")
+          for cidr in cn_cidrs:
+              blacklist.append(f"IP-CIDR,{cidr},DIRECT")
+          blacklist.append("")
+
+          # GEOIP
+          blacklist.append("# ====== GEOIP ======")
+          blacklist.append("GEOIP,CN,DIRECT")
+          blacklist.append("")
+
+          # FINAL (blacklist: default direct)
+          blacklist.append("# ====== 最终规则（黑名单模式）======" )
+          blacklist.append("FINAL,DIRECT")
+
+          # Write blacklist
+          blacklist_path = "loyalsoldier-blacklist.conf"
+          with open(blacklist_path, 'w', encoding='utf-8') as f:
+              f.write('\n'.join(blacklist))
+              f.write('\n')
+
+          # Print stats
+          total_rules = (
+              len(applications) + len(lan_cidrs) + len(reject_domains) +
+              len(apple_domains) + len(icloud_domains) + len(google_domains) +
+              len(direct_domains) + len(gfw_domains) + len(tld_not_cn_domains) +
+              len(proxy_domains) + len(telegram_cidrs) + len(cn_cidrs) + 2
+          )
+          whitelist_size = os.path.getsize(whitelist_path)
+          blacklist_size = os.path.getsize(blacklist_path)
+          print(f"\nDone!")
+          print(f"Total rules per file: {total_rules:,}")
+          print(f"Whitelist file size: {whitelist_size / 1024:.2f} KB")
+          print(f"Blacklist file size: {blacklist_size / 1024:.2f} KB")
+          print(f"Output: {whitelist_path}, {blacklist_path}")
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add loyalsoldier-whitelist.conf loyalsoldier-blacklist.conf
+          git diff --cached --quiet || git commit -m "🔄 自动更新 Loyalsoldier 规则 $(date +'%Y-%m-%d %H:%M')
+
+          - 同步 reject.txt（广告拦截）
+          - 同步 proxy.txt / direct.txt（代理/直连域名）
+          - 同步 gfw.txt / tld-not-cn.txt（GFW/非中国域名）
+          - 同步 apple.txt / icloud.txt / google.txt（Apple/iCloud/Google）
+          - 同步 telegramcidr.txt / cncidr.txt / lancidr.txt（IP 规则）
+          - 同步 applications.txt（应用直连规则）
+          - 生成白名单模式规则：loyalsoldier-whitelist.conf
+          - 生成黑名单模式规则：loyalsoldier-blacklist.conf"
+          git push origin main
+
+      - name: Cleanup
+        run: rm -rf rules/
